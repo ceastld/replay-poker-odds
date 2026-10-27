@@ -1079,6 +1079,120 @@
       return best;
     }
 
+    /**
+     * Amount still needed to call (B). Read-only from action buttons.
+     * Returns null when unknown / Check (no call) / not hero's turn.
+     */
+    function scrapeCallDom() {
+      const sels = [
+        '.Footer__actions .BettingControls__action--neutral',
+        '.Footer__actions button.BettingControls__action--neutral',
+        'button.BettingControls__action--neutral',
+        '[class*="BettingControls__action--neutral"]',
+        '.Footer__actions .PreTurnIntents__column--neutral',
+        '[class*="PreTurnIntents__column--neutral"]',
+      ];
+      function parseCallBlob(blob) {
+        if (!blob) return null;
+        const s = String(blob).replace(/\s+/g, ' ').trim();
+        if (!s) return null;
+        // Pure check → no call required (hide tip)
+        if (/^(Check|过牌)\b/i.test(s) && !/(Call|跟注|Raise|加注|Bet|下注|All-?In)/i.test(s)) {
+          return 0;
+        }
+        let m = s.match(
+          /(?:Call|跟注)\s*(?:All-?In)?\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?\s*[kKmMbB]?)/i
+        );
+        if (m) return parseChipText(m[1]);
+        // "All-in 123" on neutral when calling all-in
+        m = s.match(/All-?In\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?\s*[kKmMbB]?)/i);
+        if (m && /(Call|跟注|All-?In)/i.test(s) && !/(Raise|加注|Bet\b|下注)/i.test(s)) {
+          return parseChipText(m[1]);
+        }
+        return null;
+      }
+      for (let s = 0; s < sels.length; s++) {
+        let nodes;
+        try {
+          nodes = document.querySelectorAll(sels[s]);
+        } catch (_) {
+          continue;
+        }
+        for (let i = 0; i < nodes.length; i++) {
+          const el = nodes[i];
+          try {
+            const st = window.getComputedStyle(el);
+            if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
+          } catch (_) {}
+          const blob =
+            (el.getAttribute('aria-label') || '') +
+            ' ' +
+            (el.textContent || '');
+          const n = parseCallBlob(blob);
+          if (n != null && n > 0) return n;
+          if (n === 0) return null; // Check → hide
+        }
+      }
+      // Fallback: any footer/control button labeled Call/跟注 + amount
+      try {
+        const root =
+          document.querySelector('.Footer__actions, [class*="BettingControls"], [class*="Footer"]') ||
+          document.body;
+        const btns = root.querySelectorAll('button, [role="button"], [class*="action"]');
+        for (let i = 0; i < btns.length; i++) {
+          const el = btns[i];
+          const blob =
+            (el.getAttribute('aria-label') || '') +
+            ' ' +
+            (el.textContent || '');
+          if (!/(Call|跟注)/i.test(blob)) continue;
+          if (/(Raise|加注)/i.test(blob) && !/(Call|跟注)/i.test(blob)) continue;
+          const n = parseCallBlob(blob);
+          if (n != null && n > 0) return n;
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    /**
+     * Pot-odds tip: need ≥ B/(P+B) equity to break even on a call.
+     * Returns null when pot or call unknown (or call is 0).
+     */
+    function potOddsTip(pot, callAmt, eq) {
+      if (pot == null || !(pot > 0)) return null;
+      if (callAmt == null || !(callAmt > 0)) return null;
+      const need = callAmt / (pot + callAmt);
+      if (!(need > 0) || need > 1 || isNaN(need)) return null;
+      const needPct = Math.round(need * 1000) / 10; // one decimal when helpful
+      const needTxt =
+        needPct >= 10 || Math.abs(needPct - Math.round(needPct)) < 0.05
+          ? String(Math.round(needPct))
+          : needPct.toFixed(1);
+      let line = '跟注需≥' + needTxt + '%';
+      let ok = null;
+      if (eq != null && !isNaN(eq)) {
+        const eqPct = Math.round(eq * 100);
+        ok = eq + 1e-9 >= need;
+        line += ' · 现' + eqPct + '%' + (ok ? ' ✓' : ' 不足');
+      }
+      return {
+        need: need,
+        eq: eq,
+        ok: ok,
+        pot: pot,
+        call: callAmt,
+        label: line,
+        detail:
+          '底池' +
+          Math.round(pot) +
+          ' · 跟注' +
+          Math.round(callAmt) +
+          ' · 盈亏平衡 ' +
+          needTxt +
+          '%（B/(P+B)）',
+      };
+    }
+
     function streetName(boardLen) {
       if (boardLen <= 0) return '翻前';
       if (boardLen === 3) return '翻牌';
@@ -1202,6 +1316,9 @@
       lookupBeatPct,
       estimateOpponentsDom,
       syncOpponentsFromDom,
+      scrapePotDom,
+      scrapeCallDom,
+      potOddsTip,
       recommendBet,
     };
 
@@ -1224,6 +1341,8 @@
       alerts: [],
       beatProbs: null,
       pot: null,
+      callAmount: null,
+      potOddsHint: null,
       betHint: null,
     };
 
@@ -1298,10 +1417,21 @@
         const pot = scrapePotDom();
         if (pot != null) state.pot = pot;
       } catch (_) {}
+      try {
+        const callAmt = scrapeCallDom();
+        state.callAmount = callAmt;
+      } catch (_) {
+        state.callAmount = null;
+      }
       let eq = null;
       if (state.win != null && !isNaN(state.win)) {
         const tie = state.tie == null || isNaN(state.tie) ? 0 : state.tie;
         eq = state.win + tie;
+      }
+      try {
+        state.potOddsHint = potOddsTip(state.pot, state.callAmount, eq);
+      } catch (_) {
+        state.potOddsHint = null;
       }
       state.betHint = recommendBet(
         eq,
@@ -2166,15 +2296,22 @@
             }
           }
         }
-        // refresh pot quietly for sizing
+        // refresh pot / call quietly for sizing + pot-odds tip
         try {
+          let dirty = false;
           const pot = scrapePotDom();
           if (pot != null && pot !== state.pot) {
             state.pot = pot;
-            if (state.win != null) {
-              refreshAnalysis();
-              render();
-            }
+            dirty = true;
+          }
+          const callAmt = scrapeCallDom();
+          if (callAmt !== state.callAmount) {
+            state.callAmount = callAmt;
+            dirty = true;
+          }
+          if (dirty) {
+            refreshAnalysis();
+            render();
           }
         } catch (_) {}
       } catch (_) {}
@@ -2501,7 +2638,7 @@
       root.setAttribute('aria-label', 'Replay equity bar');
 
       root.innerHTML =
-        '<div data-k="compact" style="display:flex;flex-direction:column;gap:6px;max-width:min(420px,calc(100vw - 24px));min-width:220px;">' +
+        '<div data-k="compact" style="display:flex;flex-direction:column;gap:6px;max-width:min(340px,calc(100vw - 24px));min-width:200px;">' +
         '<div style="display:flex;align-items:center;gap:8px;white-space:nowrap;">' +
         '<span data-k="cDot" style="width:7px;height:7px;border-radius:50%;background:#3dde7a;box-shadow:0 0 8px rgba(61,222,122,.5);flex:0 0 auto;"></span>' +
         '<span style="display:flex;flex-direction:column;gap:0;line-height:1.1;">' +
@@ -2513,6 +2650,7 @@
         '<button type="button" data-act="special" title="特殊概率" style="margin-left:auto;cursor:pointer;border:0;background:rgba(255,255,255,0.08);color:#c9d4e5;border-radius:999px;padding:2px 8px;font-size:11px;">特殊</button><button type="button" data-act="expand" title="详情" style="cursor:pointer;border:0;background:rgba(255,255,255,0.08);color:#c9d4e5;border-radius:999px;padding:2px 8px;font-size:11px;">详情</button>' +
         '</div>' +
         '<div data-k="cAlerts" style="display:none;flex-direction:column;gap:6px;"></div>' +
+        '<div data-k="cPotOdds" style="font-size:10px;line-height:1.3;padding:4px 7px;border-radius:8px;background:rgba(120,160,255,0.10);color:#a8c8ff;display:none;white-space:normal;word-break:break-word;"></div>' +
         '<div data-k="cBet" style="font-size:11px;line-height:1.35;padding:5px 8px;border-radius:8px;background:rgba(90,200,160,0.08);color:#8fe3c0;display:none;"></div>' +
         '</div>' +
         '<div data-k="detail" style="display:none;">' +
@@ -2538,6 +2676,8 @@
         '<div data-k="meta" style="opacity:.45;font-size:10px;margin-top:6px;">—</div>' +
         '<div data-k="status" style="opacity:.7;font-size:10px;margin-top:2px;min-height:1.2em;"></div>' +
         '<div data-k="madeLine" style="margin-top:6px;font-size:12px;font-weight:650;">成牌：—</div>' +
+        '<div data-k="potOddsLine" style="margin-top:6px;font-size:11px;padding:5px 8px;border-radius:8px;background:rgba(120,160,255,0.10);color:#a8c8ff;line-height:1.35;display:none;"></div>' +
+        '<div data-k="potOddsDetail" style="margin-top:2px;font-size:10px;opacity:.55;line-height:1.3;display:none;"></div>' +
         '<div data-k="betLine" style="margin-top:6px;font-size:12px;padding:6px 8px;border-radius:8px;background:rgba(90,200,160,0.08);color:#8fe3c0;line-height:1.4;">建议：—</div>' +
         '<div data-k="betDetail" style="margin-top:3px;font-size:10px;opacity:.55;line-height:1.35;"></div>' +
         '<div data-k="alerts" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;"></div>' +
@@ -2555,6 +2695,7 @@
         cEqSub: root.querySelector('[data-k="cEqSub"]'),
         cMade: root.querySelector('[data-k="cMade"]'),
         cBet: root.querySelector('[data-k="cBet"]'),
+        cPotOdds: root.querySelector('[data-k="cPotOdds"]'),
         cAlerts: root.querySelector('[data-k="cAlerts"]'),
         eqHero: root.querySelector('[data-k="eqHero"]'),
         barWin: root.querySelector('[data-k="barWin"]'),
@@ -2569,6 +2710,8 @@
         meta: root.querySelector('[data-k="meta"]'),
         status: root.querySelector('[data-k="status"]'),
         madeLine: root.querySelector('[data-k="madeLine"]'),
+        potOddsLine: root.querySelector('[data-k="potOddsLine"]'),
+        potOddsDetail: root.querySelector('[data-k="potOddsDetail"]'),
         betLine: root.querySelector('[data-k="betLine"]'),
         betDetail: root.querySelector('[data-k="betDetail"]'),
         alerts: root.querySelector('[data-k="alerts"]'),
@@ -2914,6 +3057,54 @@
         (state.trials ? ' · N=' + state.trials : '');
       els.status.textContent = state.status || '';
       if (els.madeLine) els.madeLine.textContent = '成牌：' + (state.made || '—');
+      const potTip = state.potOddsHint;
+      if (els.cPotOdds) {
+        if (potTip && potTip.label) {
+          els.cPotOdds.style.display = 'block';
+          els.cPotOdds.textContent = potTip.label;
+          if (potTip.ok === true) {
+            els.cPotOdds.style.background = 'rgba(90,200,160,0.12)';
+            els.cPotOdds.style.color = '#8fe3c0';
+          } else if (potTip.ok === false) {
+            els.cPotOdds.style.background = 'rgba(255,140,80,0.14)';
+            els.cPotOdds.style.color = '#ffd0a8';
+          } else {
+            els.cPotOdds.style.background = 'rgba(120,160,255,0.10)';
+            els.cPotOdds.style.color = '#a8c8ff';
+          }
+        } else {
+          els.cPotOdds.style.display = 'none';
+          els.cPotOdds.textContent = '';
+        }
+      }
+      if (els.potOddsLine) {
+        if (potTip && potTip.label) {
+          els.potOddsLine.style.display = 'block';
+          els.potOddsLine.textContent = potTip.label;
+          if (potTip.ok === true) {
+            els.potOddsLine.style.background = 'rgba(90,200,160,0.12)';
+            els.potOddsLine.style.color = '#8fe3c0';
+          } else if (potTip.ok === false) {
+            els.potOddsLine.style.background = 'rgba(255,140,80,0.14)';
+            els.potOddsLine.style.color = '#ffd0a8';
+          } else {
+            els.potOddsLine.style.background = 'rgba(120,160,255,0.10)';
+            els.potOddsLine.style.color = '#a8c8ff';
+          }
+        } else {
+          els.potOddsLine.style.display = 'none';
+          els.potOddsLine.textContent = '';
+        }
+      }
+      if (els.potOddsDetail) {
+        if (potTip && potTip.detail) {
+          els.potOddsDetail.style.display = 'block';
+          els.potOddsDetail.textContent = potTip.detail;
+        } else {
+          els.potOddsDetail.style.display = 'none';
+          els.potOddsDetail.textContent = '';
+        }
+      }
       const hint = state.betHint;
       if (els.cBet) {
         if (hint && hint.label && hint.label !== '—') {

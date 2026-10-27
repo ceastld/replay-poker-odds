@@ -11,7 +11,7 @@
 
 1. **Releases（最省事）**  
    - 打开 [Releases](https://github.com/ceastld/replay-poker-odds/releases)  
-   - `main` 每次推送会更新滚动预发布 **`latest`**；打标签（如 `v1.7.7`）会单独发正式 Release  
+   - `main` 每次推送会更新滚动预发布 **`latest`**；打标签（如 `v1.7.8`）会单独发正式 Release  
    - 下载 `replay-poker-odds-*.zip`，解压后得到文件夹 `replay-poker-odds-ext`
 2. **Actions 产物**  
    - 打开 [Actions → Release extension](https://github.com/ceastld/replay-poker-odds/actions/workflows/release-extension.yml)  
@@ -47,6 +47,7 @@
 ## 使用说明
 
 - 浮层显示：手牌、公共牌、对手数、胜 / 平 / 败率。
+- **底池赔率提示**：能读到底池 P 与跟注额 B 时显示「跟注需 ≥ B/(P+B) 权益」并对比当前权益；读不到则隐藏。
 - **「对手弃牌 -1」**：只减少浮层内的对手计数并重算，**不会**替你在牌桌上点 Fold。
 - **「重算」**：用当前牌面再跑一轮蒙特卡洛。
 - 识牌优先读站点 `console.info` 的 Hole / Community cards 日志；失败时回退到 DOM（`.Cards--mine` / `.Cards__communityCards`）。
