@@ -4,6 +4,22 @@
 
 **硬边界：仅显示，绝不代打。** 不会点击 Fold / Call / Raise / Sit-in 等任何下注控件。
 
+
+## 从 GitHub 下载 ZIP（推荐给非本机开发者）
+
+推送到 `main` 或打 `v*` 标签后，Actions 会打出**已解压扩展的 ZIP**（内含 `manifest.json`、`content.js`、`README.md`，可选 `install-chrome.ps1`），便于「加载已解压」或发给别人。
+
+1. **Releases（最省事）**  
+   - 打开 [Releases](https://github.com/ceastld/replay-poker-odds/releases)  
+   - `main` 每次推送会更新滚动预发布 **`latest`**；打标签（如 `v1.7.7`）会单独发正式 Release  
+   - 下载 `replay-poker-odds-*.zip`，解压后得到文件夹 `replay-poker-odds-ext`
+2. **Actions 产物**  
+   - 打开 [Actions → Release extension](https://github.com/ceastld/replay-poker-odds/actions/workflows/release-extension.yml)  
+   - 点进某次成功的 run → **Artifacts** → 下载同名 ZIP
+3. 解压后按下面「方式 B：手动加载」选中该文件夹即可。
+
+**关于 CRX / Chrome 网上应用店：** CI 只产出 ZIP，不包含也不生成扩展私钥。打包 `.crx` 或上架 Web Store 需要你自己的密钥 / 开发者账号，请勿把私钥写进仓库。
+
 ## 本地加载步骤
 
 ### 方式 A：一键脚本（推荐，Windows）

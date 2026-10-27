@@ -1,0 +1,68 @@
+name: Release extension
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build unpacked-extension ZIP
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          SHORT_SHA="${GITHUB_SHA::7}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ARTIFACT="replay-poker-odds-${GITHUB_REF_NAME}"
+          else
+            ARTIFACT="replay-poker-odds-v${VERSION}-${SHORT_SHA}"
+          fi
+          mkdir -p dist/replay-poker-odds-ext
+          cp manifest.json content.js README.md dist/replay-poker-odds-ext/
+          # Optional helper for Windows; not required for Chrome「加载已解压」
+          if [[ -f install-chrome.ps1 ]]; then
+            cp install-chrome.ps1 dist/replay-poker-odds-ext/
+          fi
+          (cd dist && zip -r "../${ARTIFACT}.zip" replay-poker-odds-ext)
+          echo "ARTIFACT_NAME=${ARTIFACT}.zip" >> "$GITHUB_ENV"
+          echo "ARTIFACT_BASENAME=${ARTIFACT}" >> "$GITHUB_ENV"
+          ls -la "${ARTIFACT}.zip"
+          unzip -l "${ARTIFACT}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_BASENAME }}
+          path: ${{ env.ARTIFACT_NAME }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Tags → release for that tag. Main → rolling "latest" prerelease (updated each push).
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Latest (main @ {0})', github.sha) }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          make_latest: ${{ startsWith(github.ref, 'refs/tags/') }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: ${{ env.ARTIFACT_NAME }}
+          body: |
+            Chrome-loadable **unpacked extension ZIP**.
+
+            1. Download and unzip.
+            2. Chrome → `chrome://extensions/` → enable **Developer mode**.
+            3. **Load unpacked** → select the `replay-poker-odds-ext` folder.
+
+            ### CRX / Chrome Web Store
+            This workflow ships a ZIP only (no private signing key in CI).
+            A `.crx` or Web Store publish needs your own extension key / developer account — do not commit private keys here.
