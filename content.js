@@ -1171,8 +1171,9 @@
       let line = '跟注需≥' + needTxt + '%';
       let ok = null;
       if (eq != null && !isNaN(eq)) {
-        const eqPct = Math.round(eq * 100);
-        ok = eq + 1e-9 >= need;
+        // eq is already 0–100 (same as state.win from monteCarlo)
+        const eqPct = Math.round(eq);
+        ok = eq / 100 + 1e-9 >= need;
         line += ' · 现' + eqPct + '%' + (ok ? ' ✓' : ' 不足');
       }
       return {

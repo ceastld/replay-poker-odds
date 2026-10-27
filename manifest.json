@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Replay Poker Odds Overlay",
-  "version": "1.7.8",
+  "version": "1.7.9",
   "description": "Auto-detect cards and estimate equity. Display-only bottom bar + special combo panel.",
   "content_scripts": [
     {
