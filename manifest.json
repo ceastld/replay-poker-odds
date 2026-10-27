@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Replay Poker 胜率浮层",
-  "version": "1.1.0",
-  "description": "自动识牌并估算胜率；仅显示，不代打",
+  "name": "Replay Poker Odds Overlay",
+  "version": "1.7.6",
+  "description": "Auto-detect cards and estimate equity. Display-only bottom bar + special combo panel.",
   "content_scripts": [
     {
       "matches": [
