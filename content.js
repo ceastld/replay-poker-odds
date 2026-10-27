@@ -202,8 +202,9 @@
 
         let beaten = false;
         let tied = false;
-        const trialCat = {};
-        const trialPocket = {};
+        // Fixed flags — avoid per-trial Object.keys alloc for beat-% tracking.
+        let tc0 = 0, tc1 = 0, tc2 = 0, tc3 = 0, tc4 = 0, tc5 = 0, tc6 = 0, tc7 = 0, tc8 = 0;
+        let pkMask = 0; // bit (rank-2) for pocket 2..A
         for (let o = 0; o < nOpp; o++) {
           const o1 = pool[p++];
           const o2 = pool[p++];
@@ -212,20 +213,35 @@
           if (cmp > 0) {
             beaten = true;
             const oc = oppScore[0] | 0;
-            if (oc >= 0 && oc <= 8) trialCat[oc] = true;
-            if (o1.rank === o2.rank) trialPocket[o1.rank] = true;
+            if (oc === 0) tc0 = 1;
+            else if (oc === 1) tc1 = 1;
+            else if (oc === 2) tc2 = 1;
+            else if (oc === 3) tc3 = 1;
+            else if (oc === 4) tc4 = 1;
+            else if (oc === 5) tc5 = 1;
+            else if (oc === 6) tc6 = 1;
+            else if (oc === 7) tc7 = 1;
+            else if (oc === 8) tc8 = 1;
+            if (o1.rank === o2.rank) pkMask |= 1 << (o1.rank - 2);
           } else if (cmp === 0) {
             tied = true;
           }
         }
         if (beaten) {
           losses++;
-          const cks = Object.keys(trialCat);
-          for (let i = 0; i < cks.length; i++) catHits[Number(cks[i])]++;
-          const pks = Object.keys(trialPocket);
-          for (let i = 0; i < pks.length; i++) {
-            const r = Number(pks[i]);
-            pocketHits[r] = (pocketHits[r] || 0) + 1;
+          if (tc0) catHits[0]++;
+          if (tc1) catHits[1]++;
+          if (tc2) catHits[2]++;
+          if (tc3) catHits[3]++;
+          if (tc4) catHits[4]++;
+          if (tc5) catHits[5]++;
+          if (tc6) catHits[6]++;
+          if (tc7) catHits[7]++;
+          if (tc8) catHits[8]++;
+          if (pkMask) {
+            for (let r = 2; r <= 14; r++) {
+              if (pkMask & (1 << (r - 2))) pocketHits[r] = (pocketHits[r] || 0) + 1;
+            }
           }
         } else if (tied) ties++;
         else wins++;
@@ -331,7 +347,7 @@
         const heroScore = evaluateOmahaHi(hero, fullBoard);
         let beaten = false;
         let tied = false;
-        const trialCat = {};
+        let tc0 = 0, tc1 = 0, tc2 = 0, tc3 = 0, tc4 = 0, tc5 = 0, tc6 = 0, tc7 = 0, tc8 = 0;
         for (let o = 0; o < nOpp; o++) {
           const oh = [
             parseCardObj(deck[p++]),
@@ -340,20 +356,34 @@
             parseCardObj(deck[p++]),
           ];
           const oppScore = evaluateOmahaHi(oh, fullBoard);
-          if (!heroScore || !oppScore) continue;
           const cmp = compareScores(oppScore, heroScore);
           if (cmp > 0) {
             beaten = true;
             const oc = oppScore[0] | 0;
-            if (oc >= 0 && oc <= 8) trialCat[oc] = true;
+            if (oc === 0) tc0 = 1;
+            else if (oc === 1) tc1 = 1;
+            else if (oc === 2) tc2 = 1;
+            else if (oc === 3) tc3 = 1;
+            else if (oc === 4) tc4 = 1;
+            else if (oc === 5) tc5 = 1;
+            else if (oc === 6) tc6 = 1;
+            else if (oc === 7) tc7 = 1;
+            else if (oc === 8) tc8 = 1;
           } else if (cmp === 0) {
             tied = true;
           }
         }
         if (beaten) {
           losses++;
-          const cks = Object.keys(trialCat);
-          for (let i = 0; i < cks.length; i++) catHits[Number(cks[i])]++;
+          if (tc0) catHits[0]++;
+          if (tc1) catHits[1]++;
+          if (tc2) catHits[2]++;
+          if (tc3) catHits[3]++;
+          if (tc4) catHits[4]++;
+          if (tc5) catHits[5]++;
+          if (tc6) catHits[6]++;
+          if (tc7) catHits[7]++;
+          if (tc8) catHits[8]++;
         } else if (tied) ties++;
         else wins++;
       }
@@ -1198,7 +1228,13 @@
     };
 
     let computeToken = 0;
-    const DEFAULT_TRIALS = 10000;
+    // Fewer trials = less main-thread stall; ~4k is enough for HUD-grade equity/beat %.
+    const DEFAULT_TRIALS = 4000;
+    const OMAHA_TRIALS = 1200;
+    const DOM_POLL_MS = 2500;
+    const DOM_MUTATION_DEBOUNCE_MS = 400;
+    const COMPUTE_DEBOUNCE_MS = 350;
+    const OBSERVER_REBIND_MS = 4000;
     let lastDomHeroKey = '';
     let lastDomBoardKey = '';
     let domMissLogged = false;
@@ -1206,6 +1242,18 @@
     let domObserver = null;
     let observedRoot = null;
     let pollDomSoonTimer = 0;
+    let computeDebounceTimer = 0;
+    let pendingComputeReason = '';
+    let pendingComputeWhileHidden = false;
+    let lastComputeKey = '';
+
+    function isTabHidden() {
+      try {
+        return typeof document !== 'undefined' && !!document.hidden;
+      } catch (_) {
+        return false;
+      }
+    }
 
     function cardsKey(arr) {
       return (arr || []).join(',');
@@ -1263,7 +1311,19 @@
       );
     }
 
-    function scheduleCompute(reason) {
+    function computeSignature() {
+      return (
+        cardsKey(state.hero) +
+        '|' +
+        cardsKey(state.board) +
+        '|' +
+        state.opponents +
+        '|' +
+        state.variant
+      );
+    }
+
+    function runComputeNow(reason) {
       try {
         state.variant = detectGameVariant();
       } catch (_) {}
@@ -1273,6 +1333,7 @@
       if (state.hero.length !== need) {
         state.win = state.tie = state.lose = null;
         state.beatProbs = null;
+        lastComputeKey = '';
         if (omaha && state.hero.length > 0 && state.hero.length < 4) {
           state.status = 'Omaha 需要 4 张手牌（' + state.hero.length + '/4）';
         } else {
@@ -1288,25 +1349,44 @@
         } catch (_) {}
         if (state.opponents < 1) state.opponents = 1;
       }
+      const sig = computeSignature();
+      // Skip duplicate heavy MC when cards/opps unchanged (DOM twitch / rebind).
+      if (
+        sig === lastComputeKey &&
+        state.win != null &&
+        !isNaN(state.win) &&
+        !state.computing
+      ) {
+        return;
+      }
       const token = ++computeToken;
       state.computing = true;
+      const trials = omaha ? OMAHA_TRIALS : DEFAULT_TRIALS;
       const tag = omaha ? (state.variant === 'omaha-hl' ? 'Omaha Hi' : 'Omaha') : 'NLH';
       state.status = '计算中… ' + tag + ' (' + reason + ')';
       render();
 
-      // Yield so overlay paints, then run MC (chunked lightly)
+      // Yield so overlay paints, then run MC
       setTimeout(function () {
         if (token !== computeToken) return;
+        if (isTabHidden()) {
+          // Tab hid mid-queue — keep signature pending for visibility resume.
+          state.computing = false;
+          pendingComputeWhileHidden = true;
+          pendingComputeReason = reason || pendingComputeReason || '可见后补算';
+          return;
+        }
         try {
           const res = omaha
-            ? monteCarloOmaha(state.hero, state.board, state.opponents, DEFAULT_TRIALS)
-            : monteCarlo(state.hero, state.board, state.opponents, DEFAULT_TRIALS);
+            ? monteCarloOmaha(state.hero, state.board, state.opponents, trials)
+            : monteCarlo(state.hero, state.board, state.opponents, trials);
           if (token !== computeToken) return;
           if (!res) {
             state.status = '无法计算（牌面冲突？）';
             state.computing = false;
             state.win = state.tie = state.lose = null;
             state.beatProbs = null;
+            lastComputeKey = '';
             render();
             return;
           }
@@ -1323,6 +1403,7 @@
           state.lastUpdate = new Date();
           state.computing = false;
           lastNullRetryKey = '';
+          lastComputeKey = sig;
           refreshAnalysis();
           state.status = state.alerts.length ? state.alerts[0].text : '就绪';
           render();
@@ -1330,11 +1411,46 @@
           state.computing = false;
           state.win = state.tie = state.lose = null;
           state.beatProbs = null;
+          lastComputeKey = '';
           state.status = '计算错误: ' + (err && err.message ? err.message : String(err));
           render();
         }
       }, 16);
     }
+
+    /**
+     * Queue equity MC. Debounces DOM-driven twitches; skips when tab hidden.
+     * opts.immediate: bypass debounce (manual buttons).
+     */
+    function scheduleCompute(reason, opts) {
+      opts = opts || {};
+      if (isTabHidden()) {
+        pendingComputeWhileHidden = true;
+        pendingComputeReason = reason || pendingComputeReason || '可见后补算';
+        return;
+      }
+      pendingComputeReason = reason || 'update';
+      if (opts.immediate) {
+        if (computeDebounceTimer) {
+          clearTimeout(computeDebounceTimer);
+          computeDebounceTimer = 0;
+        }
+        runComputeNow(pendingComputeReason);
+        return;
+      }
+      if (computeDebounceTimer) {
+        clearTimeout(computeDebounceTimer);
+      }
+      computeDebounceTimer = setTimeout(function () {
+        computeDebounceTimer = 0;
+        if (isTabHidden()) {
+          pendingComputeWhileHidden = true;
+          return;
+        }
+        runComputeNow(pendingComputeReason || reason || 'update');
+      }, COMPUTE_DEBOUNCE_MS);
+    }
+
 
     function resetHand() {
       state.hero = [];
@@ -1350,6 +1466,13 @@
       lastDomBoardKey = '';
       domMissLogged = false;
       lastNullRetryKey = '';
+      lastComputeKey = '';
+      pendingComputeWhileHidden = false;
+      pendingComputeReason = '';
+      if (computeDebounceTimer) {
+        clearTimeout(computeDebounceTimer);
+        computeDebounceTimer = 0;
+      }
     }
 
     function setHeroFromPlayers(playerHands) {
@@ -1884,6 +2007,7 @@
 
     function pollDom() {
       try {
+        if (isTabHidden()) return;
         if (
           !document.querySelector('.Cards__holeCards, .Cards__communityCards, .Card.Card--withValue, .Game--holdem, .Game--omaha, .Game--omahaHiLo')
         ) {
@@ -2056,16 +2180,20 @@
       } catch (_) {}
     }
 
-    setInterval(pollDom, 1200);
+    setInterval(function () {
+      if (isTabHidden()) return;
+      pollDom();
+    }, DOM_POLL_MS);
 
     function schedulePollDomSoon() {
+      if (isTabHidden()) return;
       if (pollDomSoonTimer) return;
       pollDomSoonTimer = setTimeout(function () {
         pollDomSoonTimer = 0;
         try {
-          pollDom();
+          if (!isTabHidden()) pollDom();
         } catch (_) {}
-      }, 80);
+      }, DOM_MUTATION_DEBOUNCE_MS);
     }
 
     function bindDomObserver() {
@@ -2116,6 +2244,7 @@
 
     // document_start runs before the table mounts; rebind when SPA swaps the root.
     setInterval(function () {
+      if (isTabHidden()) return;
       try {
         const table = document.querySelector(
           '.Cards__holeCards, .Cards__communityCards, .Game--holdem, .Game--omaha, [class*="Game--"]'
@@ -2133,9 +2262,27 @@
           pollDom();
         }
       } catch (_) {}
-    }, 2000);
+    }, OBSERVER_REBIND_MS);
 
     bindDomObserver();
+
+    // Resume DOM poll + pending MC when the tab is shown again.
+    try {
+      document.addEventListener(
+        'visibilitychange',
+        function () {
+          if (isTabHidden()) return;
+          try {
+            pollDom();
+          } catch (_) {}
+          if (pendingComputeWhileHidden) {
+            pendingComputeWhileHidden = false;
+            scheduleCompute(pendingComputeReason || '可见后补算', { immediate: true });
+          }
+        },
+        false
+      );
+    } catch (_) {}
 
     // ─── Bottom bar UI (no sidebar, no viewport hacking) ───────────────
     function fmtPct(v) {
@@ -2451,7 +2598,7 @@
         if (state.opponents > 1) {
           state.opponents--;
           state.oppManualThisHand = true;
-          scheduleCompute('弃牌-1');
+          scheduleCompute('弃牌-1', { immediate: true });
         } else {
           state.status = '对手数已是最小值 1';
           render();
@@ -2460,7 +2607,7 @@
       root.querySelector('[data-act="recalc"]').addEventListener('click', function (e) {
         e.preventDefault();
         e.stopPropagation();
-        scheduleCompute('手动重算');
+        scheduleCompute('手动重算', { immediate: true });
       });
 
       (document.body || document.documentElement).appendChild(root);
