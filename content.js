@@ -950,6 +950,53 @@
      * Situation notes for practice: made hand + board dangers + draws.
      * Returns { made, alerts:[{level:'danger'|'warn'|'info', text}] }
      */
+
+    /**
+     * Omaha own draws: only 2 hole cards count toward a flush/straight.
+     * Flush draw = ≥2 hole of suit S + exactly 2 board of S (need one more).
+     * 3 suited holes + 1 board is NOT a flush draw (you may use only 2 holes).
+     */
+    function omahaOwnDraws(hero, board, cat) {
+      const out = [];
+      if (!hero || hero.length !== 4 || !board || board.length < 3 || board.length > 4) {
+        return out;
+      }
+      const suits = ['s', 'h', 'd', 'c'];
+      let flushDraw = false;
+      for (let s = 0; s < suits.length; s++) {
+        const suit = suits[s];
+        let h = 0;
+        let b = 0;
+        for (let i = 0; i < hero.length; i++) if (hero[i].suit === suit) h++;
+        for (let i = 0; i < board.length; i++) if (board[i].suit === suit) b++;
+        if (h >= 2 && b >= 3) {
+          // already a made flush possible — not a "draw"
+          continue;
+        }
+        if (h >= 2 && b === 2 && cat < 5) flushDraw = true;
+      }
+      if (flushDraw) {
+        out.push({ level: 'info', text: '你有同花听牌（需再用 2 手牌）' });
+      }
+
+      if (cat < 4) {
+        let straightDraw = false;
+        for (let a = 0; a < COMB42.length; a++) {
+          const h0 = hero[COMB42[a][0]];
+          const h1 = hero[COMB42[a][1]];
+          const ranks = uniqueRanksDesc([h0, h1].concat(board));
+          if (boardStraightThreat(ranks) >= 4) {
+            straightDraw = true;
+            break;
+          }
+        }
+        if (straightDraw) {
+          out.push({ level: 'info', text: '你有顺子听牌（需再用 2 手牌）' });
+        }
+      }
+      return out;
+    }
+
     function analyzeSituation(heroCodes, boardCodes) {
       const alerts = [];
       const hero = (heroCodes || []).map(parseCardObj).filter(Boolean);
@@ -1125,18 +1172,23 @@
           text: '你现在：' + made,
         });
 
-        // Own draws (still useful)
+        // Own draws — Hold'em vs Omaha rules differ (Omaha: exactly 2 hole + 3 board)
         if (board.length <= 4) {
-          const suitN = maxSuitCount(board);
-          const all = hero.concat(board);
-          const hs = maxSuitCount(all);
-          if (hs >= 4 && suitN < 5 && cat < 5) {
-            alerts.push({ level: 'info', text: '你有同花听牌' });
-          }
-          const allRanks = uniqueRanksDesc(all);
-          const hit = boardStraightThreat(allRanks);
-          if (hit === 4 && cat < 4) {
-            alerts.push({ level: 'info', text: '你有顺子听牌' });
+          if (omahaHero) {
+            const draws = omahaOwnDraws(hero, board, cat);
+            for (let di = 0; di < draws.length; di++) alerts.push(draws[di]);
+          } else {
+            const suitN = maxSuitCount(board);
+            const all = hero.concat(board);
+            const hs = maxSuitCount(all);
+            if (hs >= 4 && suitN < 5 && cat < 5) {
+              alerts.push({ level: 'info', text: '你有同花听牌' });
+            }
+            const allRanks = uniqueRanksDesc(all);
+            const hit = boardStraightThreat(allRanks);
+            if (hit === 4 && cat < 4) {
+              alerts.push({ level: 'info', text: '你有顺子听牌' });
+            }
           }
         }
       }
