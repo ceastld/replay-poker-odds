@@ -309,7 +309,80 @@
       return best;
     }
 
-    function monteCarloOmaha(heroCodes, boardCodes, oppCount, trials) {
+    /** Low rank: A=1, 2–8 as-is; 9+ cannot make Low. */
+    function lowRankValue(card) {
+      if (!card) return null;
+      const r = card.rank | 0;
+      if (r === 14) return 1;
+      if (r >= 2 && r <= 8) return r;
+      return null;
+    }
+
+    /** Board can produce an 8-or-better Low only with ≥3 distinct ranks ≤8. */
+    function boardCanHaveLow(board5) {
+      if (!board5 || board5.length !== 5) return false;
+      const seen = {};
+      let n = 0;
+      for (let i = 0; i < 5; i++) {
+        const v = lowRankValue(board5[i]);
+        if (v == null) continue;
+        if (seen[v]) continue;
+        seen[v] = true;
+        n++;
+      }
+      return n >= 3;
+    }
+
+    /**
+     * Best Omaha Low (8-or-better): exactly 2 hole + 3 board, 5 unique ranks ≤8.
+     * Returns descending rank array (A=1), or null if unqualified.
+     */
+    function evaluateOmahaLow(hole, board5) {
+      if (!hole || hole.length !== 4 || !board5 || board5.length !== 5) return null;
+      let best = null;
+      for (let a = 0; a < COMB42.length; a++) {
+        const h0 = hole[COMB42[a][0]];
+        const h1 = hole[COMB42[a][1]];
+        const hv0 = lowRankValue(h0);
+        const hv1 = lowRankValue(h1);
+        if (hv0 == null || hv1 == null || hv0 === hv1) continue;
+        for (let b = 0; b < COMB53.length; b++) {
+          const v0 = lowRankValue(board5[COMB53[b][0]]);
+          const v1 = lowRankValue(board5[COMB53[b][1]]);
+          const v2 = lowRankValue(board5[COMB53[b][2]]);
+          if (v0 == null || v1 == null || v2 == null) continue;
+          const vals = [hv0, hv1, v0, v1, v2];
+          const seen = {};
+          let ok = true;
+          for (let i = 0; i < 5; i++) {
+            if (seen[vals[i]]) {
+              ok = false;
+              break;
+            }
+            seen[vals[i]] = true;
+          }
+          if (!ok) continue;
+          vals.sort(function (x, y) {
+            return y - x;
+          });
+          if (!best || compareLows(vals, best) > 0) best = vals;
+        }
+      }
+      return best;
+    }
+
+    /** >0 if a is a better (lower) Low than b. */
+    function compareLows(a, b) {
+      for (let i = 0; i < 5; i++) {
+        const d = (b[i] || 0) - (a[i] || 0);
+        if (d) return d;
+      }
+      return 0;
+    }
+
+    function monteCarloOmaha(heroCodes, boardCodes, oppCount, trials, opts) {
+      opts = opts || {};
+      const wantLo = !!opts.hiLo;
       const hero = (heroCodes || []).map(parseCardObj).filter(Boolean);
       if (hero.length !== 4) return null;
       const board = (boardCodes || []).map(parseCardObj).filter(Boolean);
@@ -329,10 +402,14 @@
       let wins = 0;
       let ties = 0;
       let losses = 0;
+      let lowWins = 0;
+      let lowTies = 0;
+      let lowLosses = 0;
+      let noLow = 0;
+      let scoops = 0;
       const catHits = [0, 0, 0, 0, 0, 0, 0, 0, 0];
       const N = Math.max(200, trials | 0);
       for (let t = 0; t < N; t++) {
-        // Fisher-Yates partial shuffle
         for (let i = 0; i < needBoard + needOpp; i++) {
           const j = i + Math.floor(Math.random() * (deck.length - i));
           const tmp = deck[i];
@@ -348,6 +425,7 @@
         let beaten = false;
         let tied = false;
         let tc0 = 0, tc1 = 0, tc2 = 0, tc3 = 0, tc4 = 0, tc5 = 0, tc6 = 0, tc7 = 0, tc8 = 0;
+        const oppHoles = [];
         for (let o = 0; o < nOpp; o++) {
           const oh = [
             parseCardObj(deck[p++]),
@@ -355,6 +433,7 @@
             parseCardObj(deck[p++]),
             parseCardObj(deck[p++]),
           ];
+          oppHoles.push(oh);
           const oppScore = evaluateOmahaHi(oh, fullBoard);
           const cmp = compareScores(oppScore, heroScore);
           if (cmp > 0) {
@@ -373,6 +452,8 @@
             tied = true;
           }
         }
+        let hiWin = false;
+        let hiTie = false;
         if (beaten) {
           losses++;
           if (tc0) catHits[0]++;
@@ -384,15 +465,69 @@
           if (tc6) catHits[6]++;
           if (tc7) catHits[7]++;
           if (tc8) catHits[8]++;
-        } else if (tied) ties++;
-        else wins++;
+        } else if (tied) {
+          ties++;
+          hiTie = true;
+        } else {
+          wins++;
+          hiWin = true;
+        }
+
+        if (wantLo) {
+          let splitLow = false;
+          let loWin = false;
+          let loTie = false;
+          if (!boardCanHaveLow(fullBoard)) {
+            noLow++;
+          } else {
+            const heroLow = evaluateOmahaLow(hero, fullBoard);
+            let bestOpp = null;
+            let oppBestCount = 0;
+            for (let o = 0; o < oppHoles.length; o++) {
+              const ol = evaluateOmahaLow(oppHoles[o], fullBoard);
+              if (!ol) continue;
+              if (!bestOpp || compareLows(ol, bestOpp) > 0) {
+                bestOpp = ol;
+                oppBestCount = 1;
+              } else if (compareLows(ol, bestOpp) === 0) {
+                oppBestCount++;
+              }
+            }
+            if (!heroLow && !bestOpp) {
+              noLow++;
+            } else if (!heroLow) {
+              splitLow = true;
+              lowLosses++;
+            } else if (!bestOpp) {
+              splitLow = true;
+              lowWins++;
+              loWin = true;
+            } else {
+              splitLow = true;
+              const c = compareLows(heroLow, bestOpp);
+              if (c > 0) {
+                lowWins++;
+                loWin = true;
+              } else if (c === 0) {
+                lowTies++;
+                loTie = true;
+              } else {
+                lowLosses++;
+              }
+            }
+          }
+          // Scoop ≈ take whole pot: exclusive high win + (no low half or exclusive low win)
+          if (hiWin && (!splitLow || loWin) && !loTie && !hiTie) {
+            scoops++;
+          }
+        }
       }
       const tot = wins + ties + losses;
       const beatCats = {};
       for (let c = 0; c <= 8; c++) {
         if (catHits[c]) beatCats[c] = catHits[c] / tot;
       }
-      return {
+      const out = {
         win: (100 * wins) / tot,
         tie: (100 * ties) / tot,
         lose: (100 * losses) / tot,
@@ -400,6 +535,15 @@
         beatCats: beatCats,
         beatPockets: {},
       };
+      if (wantLo) {
+        out.lowWin = (100 * lowWins) / tot;
+        out.lowTie = (100 * lowTies) / tot;
+        out.lowLose = (100 * lowLosses) / tot;
+        out.noLow = (100 * noLow) / tot;
+        out.scoop = (100 * scoops) / tot;
+        out.hiLo = true;
+      }
+      return out;
     }
 
     const HAND_NAME = [
@@ -1303,6 +1447,8 @@
       monteCarlo,
       monteCarloOmaha,
       evaluateOmahaHi,
+      evaluateOmahaLow,
+      boardCanHaveLow,
       detectGameVariant,
       normalizeCard,
       parseCardObj,
@@ -1329,6 +1475,12 @@
       board: [],
       variant: 'holdem',
       opponents: 0,
+      hiLo: false,
+      lowWin: null,
+      lowTie: null,
+      lowLose: null,
+      noLow: null,
+      scoop: null,
       source: '—',
       status: '等待发牌…',
       win: null,
@@ -1463,6 +1615,9 @@
       const need = omaha ? 4 : 2;
       if (state.hero.length !== need) {
         state.win = state.tie = state.lose = null;
+        state.lowWin = state.lowTie = state.lowLose = null;
+        state.noLow = state.scoop = null;
+        state.hiLo = false;
         state.beatProbs = null;
         lastComputeKey = '';
         if (omaha && state.hero.length > 0 && state.hero.length < 4) {
@@ -1509,13 +1664,18 @@
         }
         try {
           const res = omaha
-            ? monteCarloOmaha(state.hero, state.board, state.opponents, trials)
+            ? monteCarloOmaha(state.hero, state.board, state.opponents, trials, {
+                hiLo: state.variant === 'omaha-hl',
+              })
             : monteCarlo(state.hero, state.board, state.opponents, trials);
           if (token !== computeToken) return;
           if (!res) {
             state.status = '无法计算（牌面冲突？）';
             state.computing = false;
             state.win = state.tie = state.lose = null;
+            state.lowWin = state.lowTie = state.lowLose = null;
+            state.noLow = state.scoop = null;
+            state.hiLo = false;
             state.beatProbs = null;
             lastComputeKey = '';
             render();
@@ -1525,6 +1685,19 @@
           state.tie = res.tie;
           state.lose = res.lose;
           state.trials = res.trials;
+          if (res.hiLo) {
+            state.lowWin = res.lowWin;
+            state.lowTie = res.lowTie;
+            state.lowLose = res.lowLose;
+            state.noLow = res.noLow;
+            state.scoop = res.scoop;
+            state.hiLo = true;
+          } else {
+            state.lowWin = state.lowTie = state.lowLose = null;
+            state.noLow = null;
+            state.scoop = null;
+            state.hiLo = false;
+          }
           state.beatProbs = {
             cats: res.beatCats || {},
             pockets: res.beatPockets || {},
@@ -1541,6 +1714,9 @@
         } catch (err) {
           state.computing = false;
           state.win = state.tie = state.lose = null;
+          state.lowWin = state.lowTie = state.lowLose = null;
+          state.noLow = state.scoop = null;
+          state.hiLo = false;
           state.beatProbs = null;
           lastComputeKey = '';
           state.status = '计算错误: ' + (err && err.message ? err.message : String(err));
@@ -1588,6 +1764,9 @@
       state.board = [];
       state.opponents = 0;
       state.win = state.tie = state.lose = null;
+      state.lowWin = state.lowTie = state.lowLose = null;
+      state.noLow = state.scoop = null;
+      state.hiLo = false;
       state.trials = 0;
       state.beatProbs = null;
       state.status = '新手牌…';
@@ -2645,6 +2824,7 @@
         '<span style="display:flex;flex-direction:column;gap:0;line-height:1.1;">' +
         '<span data-k="cEq" style="font-weight:750;font-size:14px;letter-spacing:.01em;font-variant-numeric:tabular-nums;color:#3dde7a;">—</span>' +
         '<span data-k="cEqSub" style="font-size:9px;opacity:.55;">胜+平</span>' +
+        '<span data-k="cHiLo" style="font-size:9px;opacity:.75;margin-top:2px;display:none;color:#c9d4e5;font-variant-numeric:tabular-nums;"></span>' +
         '</span>' +
         '<span style="opacity:.25;padding:0 2px;">|</span>' +
         '<span data-k="cMade" style="font-weight:650;opacity:.95;">—</span>' +
@@ -2660,7 +2840,13 @@
         '<button type="button" data-act="collapse" style="cursor:pointer;border:0;background:transparent;color:#9aa8bc;font-size:12px;padding:2px 4px;">收起</button>' +
         '</div>' +
         '<div data-k="eqHero" style="font-size:22px;font-weight:750;letter-spacing:.01em;font-variant-numeric:tabular-nums;color:#3dde7a;line-height:1.1;">—</div>' +
-        '<div style="font-size:10px;opacity:.55;margin:2px 0 8px;">胜+平 · 常用权益口径</div>' +
+        '<div style="font-size:10px;opacity:.55;margin:2px 0 4px;">胜+平 · High</div>' +
+        '<div data-k="hiLoBox" style="display:none;margin:0 0 8px;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.05);font-size:11px;line-height:1.45;font-variant-numeric:tabular-nums;">' +
+        '<div data-k="hiLoHigh">High —</div>' +
+        '<div data-k="hiLoLow">Low —</div>' +
+        '<div data-k="hiLoScoop" style="opacity:.8;">Scoop —</div>' +
+        '<div data-k="hiLoNote" style="font-size:9px;opacity:.5;margin-top:2px;">Low：8或更低、无对子；桌面不足则无 Low</div>' +
+        '</div>' +
         '<div style="height:6px;border-radius:999px;background:rgba(255,255,255,0.08);overflow:hidden;display:flex;margin-bottom:8px;">' +
         '<div data-k="barWin" style="height:100%;background:#3dde7a;width:0%;"></div>' +
         '<div data-k="barTie" style="height:100%;background:#f0c04e;width:0%;"></div>' +
@@ -2694,11 +2880,16 @@
         cDot: root.querySelector('[data-k="cDot"]'),
         cEq: root.querySelector('[data-k="cEq"]'),
         cEqSub: root.querySelector('[data-k="cEqSub"]'),
+        cHiLo: root.querySelector('[data-k="cHiLo"]'),
         cMade: root.querySelector('[data-k="cMade"]'),
         cBet: root.querySelector('[data-k="cBet"]'),
         cPotOdds: root.querySelector('[data-k="cPotOdds"]'),
         cAlerts: root.querySelector('[data-k="cAlerts"]'),
         eqHero: root.querySelector('[data-k="eqHero"]'),
+        hiLoBox: root.querySelector('[data-k="hiLoBox"]'),
+        hiLoHigh: root.querySelector('[data-k="hiLoHigh"]'),
+        hiLoLow: root.querySelector('[data-k="hiLoLow"]'),
+        hiLoScoop: root.querySelector('[data-k="hiLoScoop"]'),
         barWin: root.querySelector('[data-k="barWin"]'),
         barTie: root.querySelector('[data-k="barTie"]'),
         barLose: root.querySelector('[data-k="barLose"]'),
@@ -2981,7 +3172,7 @@
       const eqTxt = fmtPct(eq);
       const tone = equityTone(eq);
       if (els.cEq) {
-        els.cEq.textContent = eqTxt;
+        els.cEq.textContent = state.hiLo && eqTxt !== '—' ? 'Hi ' + eqTxt : eqTxt;
         els.cEq.style.color = tone;
       }
       if (els.cDot) {
@@ -2989,7 +3180,7 @@
         els.cDot.style.boxShadow = '0 0 8px ' + tone;
       }
       if (els.eqHero) {
-        els.eqHero.textContent = eqTxt;
+        els.eqHero.textContent = state.hiLo && eqTxt !== '—' ? 'Hi ' + eqTxt : eqTxt;
         els.eqHero.style.color = tone;
       }
       const w = state.win == null || isNaN(state.win) ? 0 : Math.max(0, state.win);
@@ -3046,7 +3237,55 @@
       els.opp.textContent = (state.opponents || '—') + ' · ' + vlab;
       if (els.cEqSub) {
         els.cEqSub.textContent =
-          (isOmahaVariant(state.variant) ? vlab + ' · ' : '') + '胜+平';
+          state.hiLo
+            ? 'High 胜+平'
+            : (isOmahaVariant(state.variant) ? vlab + ' · ' : '') + '胜+平';
+      }
+      if (els.cHiLo) {
+        if (state.hiLo && state.lowWin != null) {
+          const hiEq = (state.win || 0) + (state.tie || 0);
+          const loEq = (state.lowWin || 0) + (state.lowTie || 0);
+          els.cHiLo.style.display = 'block';
+          els.cHiLo.textContent =
+            'Lo ' +
+            fmtPct(loEq) +
+            (state.noLow != null ? ' · 无Low ' + fmtPct(state.noLow) : '') +
+            (state.scoop != null ? ' · Scoop ' + fmtPct(state.scoop) : '');
+        } else {
+          els.cHiLo.style.display = 'none';
+          els.cHiLo.textContent = '';
+        }
+      }
+      if (els.hiLoBox) {
+        if (state.hiLo && state.lowWin != null) {
+          const hiEq = (state.win || 0) + (state.tie || 0);
+          const loEq = (state.lowWin || 0) + (state.lowTie || 0);
+          els.hiLoBox.style.display = 'block';
+          if (els.hiLoHigh)
+            els.hiLoHigh.textContent =
+              'High ' +
+              fmtPct(hiEq) +
+              '（胜 ' +
+              fmtPct(state.win) +
+              ' · 平 ' +
+              fmtPct(state.tie) +
+              '）';
+          if (els.hiLoLow)
+            els.hiLoLow.textContent =
+              'Low ' +
+              fmtPct(loEq) +
+              '（胜 ' +
+              fmtPct(state.lowWin) +
+              ' · 平 ' +
+              fmtPct(state.lowTie) +
+              ' · 无Low ' +
+              fmtPct(state.noLow) +
+              '）';
+          if (els.hiLoScoop)
+            els.hiLoScoop.textContent = 'Scoop ' + fmtPct(state.scoop) + '（通吃整池）';
+        } else {
+          els.hiLoBox.style.display = 'none';
+        }
       }
       els.win.textContent = fmtPct(state.win);
       els.tie.textContent = fmtPct(state.tie);
