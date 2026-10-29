@@ -3780,6 +3780,111 @@
      * Condition on hero+board when known; else assume hero misses the threat cards.
      * Only emit rows that match current board texture.
      */
+
+    /**
+     * Best hand category (0–8) for hero holes on this board.
+     * Omaha uses exactly 2 hole + 3 board; Hold'em uses best 5 of holes+board.
+     */
+    function madeHandCategory(hole, board, omaha) {
+      if (!hole || !board || board.length < 3) return null;
+      if (omaha) {
+        if (hole.length !== 4) return null;
+        if (board.length === 5) {
+          const sc = evaluateOmahaHi(hole, board);
+          return sc ? sc[0] | 0 : null;
+        }
+        let best = null;
+        if (board.length === 3) {
+          for (let a = 0; a < COMB42.length; a++) {
+            const sc = evaluate5([
+              hole[COMB42[a][0]],
+              hole[COMB42[a][1]],
+              board[0],
+              board[1],
+              board[2],
+            ]);
+            if (!best || compareScores(sc, best) > 0) best = sc;
+          }
+        } else if (board.length === 4) {
+          const triples = combosPick(4, 3);
+          for (let a = 0; a < COMB42.length; a++) {
+            for (let t = 0; t < triples.length; t++) {
+              const sc = evaluate5([
+                hole[COMB42[a][0]],
+                hole[COMB42[a][1]],
+                board[triples[t][0]],
+                board[triples[t][1]],
+                board[triples[t][2]],
+              ]);
+              if (!best || compareScores(sc, best) > 0) best = sc;
+            }
+          }
+        }
+        return best ? best[0] | 0 : null;
+      }
+      // Hold'em
+      if (hole.length !== 2) return null;
+      const seven = hole.concat(board);
+      let sc = null;
+      if (seven.length === 7) sc = evaluate7(seven);
+      else if (seven.length === 6) {
+        let best = null;
+        for (let skip = 0; skip < 6; skip++) {
+          const buf = [];
+          for (let i = 0; i < 6; i++) if (i !== skip) buf.push(seven[i]);
+          const s = evaluate5(buf);
+          if (!best || compareScores(s, best) > 0) best = s;
+        }
+        sc = best;
+      } else if (seven.length === 5) sc = evaluate5(seven);
+      return sc ? sc[0] | 0 : null;
+    }
+
+    /**
+     * P(at least one of `opp` opponents currently has a full house on this board).
+     * Practice approx via Monte Carlo; hero cards removed from deck.
+     */
+    function oppFullHouseAtLeastProb(hero, board, oppCount, omaha, trials) {
+      const nOpp = Math.max(1, Math.min(9, oppCount | 0));
+      const holeN = omaha ? 4 : 2;
+      if (!board || board.length < 3) return null;
+      if (omaha && (!hero || hero.length !== 4) && hero && hero.length) return null;
+      const used = {};
+      const boardObjs = board.slice();
+      for (let i = 0; i < boardObjs.length; i++) used[boardObjs[i].code] = true;
+      const heroObjs = hero && hero.length ? hero.slice() : [];
+      for (let i = 0; i < heroObjs.length; i++) used[heroObjs[i].code] = true;
+      const deck = [];
+      for (let i = 0; i < FULL_DECK.length; i++) {
+        if (!used[FULL_DECK[i]]) deck.push(FULL_DECK[i]);
+      }
+      const need = nOpp * holeN;
+      if (deck.length < need) return null;
+      const N = Math.max(400, Math.min(6000, trials | 0));
+      let hits = 0;
+      for (let t = 0; t < N; t++) {
+        for (let i = 0; i < need; i++) {
+          const j = i + Math.floor(Math.random() * (deck.length - i));
+          const tmp = deck[i];
+          deck[i] = deck[j];
+          deck[j] = tmp;
+        }
+        let p = 0;
+        let any = false;
+        for (let o = 0; o < nOpp; o++) {
+          const oh = [];
+          for (let k = 0; k < holeN; k++) oh.push(parseCardObj(deck[p++]));
+          const cat = madeHandCategory(oh, boardObjs, omaha);
+          if (cat === 6) {
+            any = true;
+            break;
+          }
+        }
+        if (any) hits++;
+      }
+      return hits / N;
+    }
+
     function computeSpecial() {
       const live = liveSpecialCards();
       const opp = Math.max(0, state.opponents | 0);
@@ -3884,6 +3989,30 @@
               pct: fmtPct2(boardCaseP),
             });
           }
+        }
+      }
+
+      // ── Paired / trips / two-pair board → full house threat ──
+      if (bp.pairs >= 1 || bp.trips) {
+        const omaha = heroN === 4 || isOmahaVariant(state.variant);
+        // Skip if river unpaired is impossible — already gated by pairs/trips
+        let fhP = null;
+        try {
+          fhP = oppFullHouseAtLeastProb(
+            heroKnown ? hero : [],
+            board,
+            opp,
+            omaha,
+            omaha ? 1600 : 2500
+          );
+        } catch (_) {
+          fhP = null;
+        }
+        if (fhP != null) {
+          rows.push({
+            label: '对手至少1人成葫芦',
+            pct: fmtPct2(fhP),
+          });
         }
       }
 
