@@ -407,6 +407,7 @@
       let lowLosses = 0;
       let noLow = 0;
       let scoops = 0;
+      let potShareSum = 0;
       const catHits = [0, 0, 0, 0, 0, 0, 0, 0, 0];
       const N = Math.max(200, trials | 0);
       for (let t = 0; t < N; t++) {
@@ -424,6 +425,7 @@
         const heroScore = evaluateOmahaHi(hero, fullBoard);
         let beaten = false;
         let tied = false;
+        let nHiTies = 0;
         let tc0 = 0, tc1 = 0, tc2 = 0, tc3 = 0, tc4 = 0, tc5 = 0, tc6 = 0, tc7 = 0, tc8 = 0;
         const oppHoles = [];
         for (let o = 0; o < nOpp; o++) {
@@ -450,6 +452,7 @@
             else if (oc === 8) tc8 = 1;
           } else if (cmp === 0) {
             tied = true;
+            nHiTies++;
           }
         }
         let hiWin = false;
@@ -477,6 +480,11 @@
           let splitLow = false;
           let loWin = false;
           let loTie = false;
+          let hiShare = 0;
+          if (hiWin) hiShare = 1;
+          else if (hiTie) hiShare = 1 / (1 + Math.max(1, nHiTies));
+          let loShare = 0;
+          let hasLow = false;
           if (!boardCanHaveLow(fullBoard)) {
             noLow++;
           } else {
@@ -497,25 +505,36 @@
               noLow++;
             } else if (!heroLow) {
               splitLow = true;
+              hasLow = true;
               lowLosses++;
+              loShare = 0;
             } else if (!bestOpp) {
               splitLow = true;
+              hasLow = true;
               lowWins++;
               loWin = true;
+              loShare = 1;
             } else {
               splitLow = true;
+              hasLow = true;
               const c = compareLows(heroLow, bestOpp);
               if (c > 0) {
                 lowWins++;
                 loWin = true;
+                loShare = 1;
               } else if (c === 0) {
                 lowTies++;
                 loTie = true;
+                loShare = 1 / (1 + oppBestCount);
               } else {
                 lowLosses++;
+                loShare = 0;
               }
             }
           }
+          // Expected pot fraction: no Low → High takes whole pot; else each half 50%.
+          const share = hasLow ? 0.5 * hiShare + 0.5 * loShare : hiShare;
+          potShareSum += share;
           // Scoop ≈ take whole pot: exclusive high win + (no low half or exclusive low win)
           if (hiWin && (!splitLow || loWin) && !loTie && !hiTie) {
             scoops++;
@@ -541,6 +560,7 @@
         out.lowLose = (100 * lowLosses) / tot;
         out.noLow = (100 * noLow) / tot;
         out.scoop = (100 * scoops) / tot;
+        out.potShare = (100 * potShareSum) / tot;
         out.hiLo = true;
       }
       return out;
@@ -1533,6 +1553,7 @@
       lowLose: null,
       noLow: null,
       scoop: null,
+      potShare: null,
       source: '—',
       status: '等待发牌…',
       win: null,
@@ -1668,7 +1689,7 @@
       if (state.hero.length !== need) {
         state.win = state.tie = state.lose = null;
         state.lowWin = state.lowTie = state.lowLose = null;
-        state.noLow = state.scoop = null;
+        state.noLow = state.scoop = state.potShare = null;
         state.hiLo = false;
         state.beatProbs = null;
         lastComputeKey = '';
@@ -1726,7 +1747,7 @@
             state.computing = false;
             state.win = state.tie = state.lose = null;
             state.lowWin = state.lowTie = state.lowLose = null;
-            state.noLow = state.scoop = null;
+            state.noLow = state.scoop = state.potShare = null;
             state.hiLo = false;
             state.beatProbs = null;
             lastComputeKey = '';
@@ -1743,11 +1764,13 @@
             state.lowLose = res.lowLose;
             state.noLow = res.noLow;
             state.scoop = res.scoop;
+            state.potShare = res.potShare;
             state.hiLo = true;
           } else {
             state.lowWin = state.lowTie = state.lowLose = null;
             state.noLow = null;
             state.scoop = null;
+            state.potShare = null;
             state.hiLo = false;
           }
           state.beatProbs = {
@@ -1767,7 +1790,7 @@
           state.computing = false;
           state.win = state.tie = state.lose = null;
           state.lowWin = state.lowTie = state.lowLose = null;
-          state.noLow = state.scoop = null;
+          state.noLow = state.scoop = state.potShare = null;
           state.hiLo = false;
           state.beatProbs = null;
           lastComputeKey = '';
@@ -1817,7 +1840,7 @@
       state.opponents = 0;
       state.win = state.tie = state.lose = null;
       state.lowWin = state.lowTie = state.lowLose = null;
-      state.noLow = state.scoop = null;
+      state.noLow = state.scoop = state.potShare = null;
       state.hiLo = false;
       state.trials = 0;
       state.beatProbs = null;
@@ -2658,8 +2681,13 @@
       if (v == null || isNaN(v)) return '—';
       return (Math.round(v * 100) / 100).toFixed(1) + '%';
     }
-    /** Equity ≈ win + tie (tie counted in full, same as common HUD display). */
+    /**
+     * Equity display:
+     * - Hold'em / Omaha Hi: win + tie (HUD-style).
+     * - Omaha Hi/Lo: expected pot share (High half + Low half; no Low → High takes all).
+     */
     function equityValue() {
+      if (state.hiLo && state.potShare != null && !isNaN(state.potShare)) return state.potShare;
       if (state.win == null || isNaN(state.win)) return null;
       const tie = state.tie == null || isNaN(state.tie) ? 0 : state.tie;
       return state.win + tie;
@@ -2876,7 +2904,7 @@
         '<span style="display:flex;flex-direction:column;gap:0;line-height:1.1;">' +
         '<span data-k="cEq" style="font-weight:750;font-size:14px;letter-spacing:.01em;font-variant-numeric:tabular-nums;color:#3dde7a;">—</span>' +
         '<span data-k="cEqSub" style="font-size:9px;opacity:.55;">胜+平</span>' +
-        '<span data-k="cHiLo" style="font-size:9px;opacity:.75;margin-top:2px;display:none;color:#c9d4e5;font-variant-numeric:tabular-nums;"></span>' +
+        '<span data-k="cHiLo" style="font-size:11px;font-weight:700;margin-top:3px;display:none;color:#7ec8ff;background:rgba(70,150,255,0.16);border:1px solid rgba(110,180,255,0.4);border-radius:6px;padding:2px 6px;font-variant-numeric:tabular-nums;line-height:1.25;"></span>' +
         '</span>' +
         '<span style="opacity:.25;padding:0 2px;">|</span>' +
         '<span data-k="cMade" style="font-weight:650;opacity:.95;">—</span>' +
@@ -2892,12 +2920,13 @@
         '<button type="button" data-act="collapse" style="cursor:pointer;border:0;background:transparent;color:#9aa8bc;font-size:12px;padding:2px 4px;">收起</button>' +
         '</div>' +
         '<div data-k="eqHero" style="font-size:22px;font-weight:750;letter-spacing:.01em;font-variant-numeric:tabular-nums;color:#3dde7a;line-height:1.1;">—</div>' +
-        '<div style="font-size:10px;opacity:.55;margin:2px 0 4px;">胜+平 · High</div>' +
-        '<div data-k="hiLoBox" style="display:none;margin:0 0 8px;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.05);font-size:11px;line-height:1.45;font-variant-numeric:tabular-nums;">' +
-        '<div data-k="hiLoHigh">High —</div>' +
-        '<div data-k="hiLoLow">Low —</div>' +
-        '<div data-k="hiLoScoop" style="opacity:.8;">Scoop —</div>' +
-        '<div data-k="hiLoNote" style="font-size:9px;opacity:.5;margin-top:2px;">Low：8或更低、无对子；桌面不足则无 Low</div>' +
+        '<div data-k="eqSubLabel" style="font-size:10px;opacity:.55;margin:2px 0 4px;">胜+平</div>' +
+        '<div data-k="hiLoBox" style="display:none;margin:0 0 8px;padding:8px 9px;border-radius:10px;background:rgba(70,150,255,0.12);border:1px solid rgba(110,180,255,0.35);font-size:11px;line-height:1.45;font-variant-numeric:tabular-nums;">' +
+        '<div data-k="hiLoCombo" style="font-size:15px;font-weight:750;color:#7ec8ff;margin-bottom:4px;">综合 —</div>' +
+        '<div data-k="hiLoHigh" style="opacity:.9;">High —</div>' +
+        '<div data-k="hiLoLow" style="font-size:13px;font-weight:700;color:#9fd0ff;margin-top:2px;">Low —</div>' +
+        '<div data-k="hiLoScoop" style="opacity:.85;margin-top:2px;">Scoop —</div>' +
+        '<div data-k="hiLoNote" style="font-size:9px;opacity:.55;margin-top:3px;">综合=期望底池份额（有 Low 时 High/Low 各半；无 Low 时 High 拿整池）</div>' +
         '</div>' +
         '<div style="height:6px;border-radius:999px;background:rgba(255,255,255,0.08);overflow:hidden;display:flex;margin-bottom:8px;">' +
         '<div data-k="barWin" style="height:100%;background:#3dde7a;width:0%;"></div>' +
@@ -2938,7 +2967,9 @@
         cPotOdds: root.querySelector('[data-k="cPotOdds"]'),
         cAlerts: root.querySelector('[data-k="cAlerts"]'),
         eqHero: root.querySelector('[data-k="eqHero"]'),
+        eqSubLabel: root.querySelector('[data-k="eqSubLabel"]'),
         hiLoBox: root.querySelector('[data-k="hiLoBox"]'),
+        hiLoCombo: root.querySelector('[data-k="hiLoCombo"]'),
         hiLoHigh: root.querySelector('[data-k="hiLoHigh"]'),
         hiLoLow: root.querySelector('[data-k="hiLoLow"]'),
         hiLoScoop: root.querySelector('[data-k="hiLoScoop"]'),
@@ -3224,7 +3255,7 @@
       const eqTxt = fmtPct(eq);
       const tone = equityTone(eq);
       if (els.cEq) {
-        els.cEq.textContent = state.hiLo && eqTxt !== '—' ? 'Hi ' + eqTxt : eqTxt;
+        els.cEq.textContent = state.hiLo && eqTxt !== '—' ? '综合 ' + eqTxt : eqTxt;
         els.cEq.style.color = tone;
       }
       if (els.cDot) {
@@ -3232,7 +3263,7 @@
         els.cDot.style.boxShadow = '0 0 8px ' + tone;
       }
       if (els.eqHero) {
-        els.eqHero.textContent = state.hiLo && eqTxt !== '—' ? 'Hi ' + eqTxt : eqTxt;
+        els.eqHero.textContent = state.hiLo && eqTxt !== '—' ? '综合 ' + eqTxt : eqTxt;
         els.eqHero.style.color = tone;
       }
       const w = state.win == null || isNaN(state.win) ? 0 : Math.max(0, state.win);
@@ -3290,8 +3321,11 @@
       if (els.cEqSub) {
         els.cEqSub.textContent =
           state.hiLo
-            ? 'High 胜+平'
+            ? '期望底池份额'
             : (isOmahaVariant(state.variant) ? vlab + ' · ' : '') + '胜+平';
+      }
+      if (els.eqSubLabel) {
+        els.eqSubLabel.textContent = state.hiLo ? '综合 · 期望底池份额' : '胜+平';
       }
       if (els.cHiLo) {
         if (state.hiLo && state.lowWin != null) {
@@ -3299,7 +3333,9 @@
           const loEq = (state.lowWin || 0) + (state.lowTie || 0);
           els.cHiLo.style.display = 'block';
           els.cHiLo.textContent =
-            'Lo ' +
+            'Hi ' +
+            fmtPct(hiEq) +
+            ' · Lo ' +
             fmtPct(loEq) +
             (state.noLow != null ? ' · 无Low ' + fmtPct(state.noLow) : '') +
             (state.scoop != null ? ' · Scoop ' + fmtPct(state.scoop) : '');
@@ -3313,6 +3349,11 @@
           const hiEq = (state.win || 0) + (state.tie || 0);
           const loEq = (state.lowWin || 0) + (state.lowTie || 0);
           els.hiLoBox.style.display = 'block';
+          if (els.hiLoCombo)
+            els.hiLoCombo.textContent =
+              '综合 ' +
+              fmtPct(state.potShare) +
+              '（期望底池份额）';
           if (els.hiLoHigh)
             els.hiLoHigh.textContent =
               'High ' +
